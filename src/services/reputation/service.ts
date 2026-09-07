@@ -25,7 +25,7 @@ export interface ReputationService {
   /** POST /api/reviews/import (CSV) */
   importReviewsCsv(file: { name: string; size: number; text: string }): Promise<ImportSummary>;
   /** POST /api/reviews/{id}/generate */
-  generateReply(id: string, payload?: GenerateReplyRequest): Promise<Review>;
+  generateReply(id: string, payload?: GenerateReplyRequest | undefined): Promise<Review>;
   /** PATCH /api/reviews/{id} */
   updateReview(id: string, payload: UpdateReviewRequest): Promise<Review>;
   /** DELETE /api/reviews/{id} */

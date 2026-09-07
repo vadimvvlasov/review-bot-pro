@@ -47,7 +47,7 @@ export function useImportCsv() {
 export function useGenerateReply() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (vars: { id: string; payload?: GenerateReplyRequest }) =>
+    mutationFn: (vars: { id: string; payload?: GenerateReplyRequest | undefined }) =>
       reputationService.generateReply(vars.id, vars.payload),
     onSuccess: () => qc.invalidateQueries({ queryKey: reviewsQueryOptions.queryKey }),
   });

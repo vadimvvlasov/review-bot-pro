@@ -1,0 +1,397 @@
+openapi: 3.0.3
+info:
+  title: Review-Reply Bot API
+  description: >
+    AI-powered Reputation Manager MVP. Single-user/single-location.
+    Manages business settings and a flat review queue with on-demand
+    AI-generated replies (draft -> approved lifecycle).
+  version: 1.0.0
+
+servers:
+  - url: /api
+
+tags:
+  - name: settings
+  - name: reviews
+
+paths:
+  /settings:
+    get:
+      tags: [settings]
+      summary: Fetch business settings (row id=1)
+      operationId: getSettings
+      responses:
+        "200":
+          description: Current business settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BusinessSettings"
+        "404":
+          description: Settings not yet configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      tags: [settings]
+      summary: Create or update business settings (upsert row id=1)
+      operationId: updateSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BusinessSettingsInput"
+      responses:
+        "200":
+          description: Settings saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BusinessSettings"
+        "422":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+
+  /reviews:
+    get:
+      tags: [reviews]
+      summary: List reviews, optionally filtered by status
+      operationId: listReviews
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/ReviewStatus"
+          description: Filter by draft (pending queue) or approved (Completed tab)
+      responses:
+        "200":
+          description: Array of reviews
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Review"
+    post:
+      tags: [reviews]
+      summary: Create a single review via manual form
+      operationId: createReview
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReviewCreate"
+      responses:
+        "201":
+          description: Review created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Review"
+        "409":
+          description: Duplicate review (same author_name + review_text already exists)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Validation error (author_name/review_text/rating out of bounds)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+
+  /reviews/import:
+    post:
+      tags: [reviews]
+      summary: Bulk import reviews from a CSV file
+      operationId: importReviewsCsv
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: >
+                    CSV with headers author_name, review_text, rating.
+                    Max 1 MB, max 100 rows.
+              required: [file]
+      responses:
+        "201":
+          description: Partial or full import completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CsvImportResult"
+        "400":
+          description: File exceeds 1 MB or contains more than 100 rows
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /reviews/{id}/generate:
+    post:
+      tags: [reviews]
+      summary: >
+        Generate (or regenerate, if a draft already exists) an AI reply for
+        one review. Single LLM call returns reply text + sentiment + tags.
+      operationId: generateReply
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateReplyRequest"
+      responses:
+        "200":
+          description: >
+            Reply generated. Metadata fields may be null/[] on partial
+            model failure (graceful degradation) — reply_text is always
+            populated on success.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Review"
+        "404":
+          description: Review not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: LLM completely unreachable or timed out — frontend shows Retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /reviews/{id}:
+    patch:
+      tags: [reviews]
+      summary: Update reply text and/or approve a review
+      operationId: updateReview
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateReviewRequest"
+      responses:
+        "200":
+          description: Review updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Review"
+        "404":
+          description: Review not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+
+components:
+  schemas:
+    ReviewStatus:
+      type: string
+      enum: [draft, approved]
+
+    SentimentEnum:
+      type: string
+      enum: [positive, neutral, negative]
+
+    BusinessSettingsInput:
+      type: object
+      required: [business_name, business_type, description, brand_voice]
+      properties:
+        business_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: "Daily Grind Cafe"
+        business_type:
+          type: string
+          minLength: 1
+          maxLength: 50
+          example: "Coffee Shop"
+        description:
+          type: string
+          minLength: 3
+          maxLength: 1000
+          example: "Cozy local cafe serving organic brews and homemade pastries."
+        brand_voice:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: "warm, welcoming, and slightly playful"
+
+    BusinessSettings:
+      allOf:
+        - $ref: "#/components/schemas/BusinessSettingsInput"
+        - type: object
+          properties:
+            id:
+              type: integer
+              enum: [1]
+
+    ReviewCreate:
+      type: object
+      required: [author_name, review_text, rating]
+      properties:
+        author_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: "John Doe"
+        review_text:
+          type: string
+          minLength: 3
+          maxLength: 5000
+          example: "Great espresso but service was a bit slow today."
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+          example: 4
+        source:
+          type: string
+          default: manual
+          example: manual
+        created_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Defaults to server timestamp if omitted.
+
+    Review:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        author_name:
+          type: string
+        review_text:
+          type: string
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        source:
+          type: string
+          example: manual
+        reply_text:
+          type: string
+          nullable: true
+          maxLength: 500
+        detected_sentiment:
+          allOf:
+            - $ref: "#/components/schemas/SentimentEnum"
+          nullable: true
+        detected_tags:
+          type: array
+          items:
+            type: string
+          maxItems: 3
+        status:
+          $ref: "#/components/schemas/ReviewStatus"
+        created_at:
+          type: string
+          format: date-time
+
+    GenerateReplyRequest:
+      type: object
+      properties:
+        instructions:
+          type: string
+          maxLength: 500
+          nullable: true
+          example: "Apologize for the slow service and offer a free cookie next time."
+
+    UpdateReviewRequest:
+      type: object
+      properties:
+        reply_text:
+          type: string
+          maxLength: 500
+          nullable: true
+        status:
+          $ref: "#/components/schemas/ReviewStatus"
+
+    CsvImportError:
+      type: object
+      properties:
+        row:
+          type: integer
+        error:
+          type: string
+
+    CsvImportResult:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+        imported:
+          type: integer
+        skipped:
+          type: integer
+        errors:
+          type: array
+          items:
+            $ref: "#/components/schemas/CsvImportError"
+
+    ErrorResponse:
+      type: object
+      properties:
+        detail:
+          type: string
+
+    ValidationErrorResponse:
+      type: object
+      properties:
+        detail:
+          type: array
+          items:
+            type: object
+            properties:
+              loc:
+                type: array
+                items:
+                  type: string
+              msg:
+                type: string
+              type:
+                type: string

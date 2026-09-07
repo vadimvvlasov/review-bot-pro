@@ -51,7 +51,7 @@ export function parseReviewCsv(text: string): ParsedCsv {
 
   if (lines.length === 0) throw new Error("CSV file is empty");
 
-  const headers = splitCsvLine(lines[0]).map((h) => h.toLowerCase());
+  const headers = splitCsvLine(lines[0] ?? "").map((h) => h.toLowerCase());
   const missing = REQUIRED_HEADERS.filter((h) => !headers.includes(h));
   if (missing.length > 0) {
     throw new Error(`CSV is missing required column(s): ${missing.join(", ")}`);
@@ -86,6 +86,10 @@ export function parseReviewCsv(text: string): ParsedCsv {
 
     if (!parsed.success) {
       const issue = parsed.error.issues[0];
+      if (!issue) {
+        errors.push({ row: rowNumber, error: "Invalid row" });
+        return;
+      }
       const field = String(issue.path[0] ?? "row");
       const message =
         field === "rating"

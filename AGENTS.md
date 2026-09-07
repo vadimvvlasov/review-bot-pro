@@ -4,4 +4,6 @@ uv sync
 uv add <PACKAGE-NAME>
 uv run python <PYTHON-FILE>
 
-regularly commit code to git 
+regularly commit code to git
+
+Ensure that the code follows SOLID clean code standard and functions are no longer than 50 lines.

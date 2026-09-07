@@ -1,0 +1,483 @@
+openapi: 3.0.3
+info:
+  title: Review-Reply Bot API (as expected by frontend/)
+  description: >
+    Backend contract derived strictly from the frontend API client in
+    frontend/src/services/reputation/ (`service.ts` ReputationService
+    interface, `types.ts` zod schemas, `mock-service.ts` error behaviour,
+    `hooks.ts` / routes usage).
+
+    The frontend is a single-user local app. No endpoint needs
+    authentication: the client never sends Authorization headers, tokens,
+    or API keys (verified across frontend/src). All operations are
+    unauthenticated.
+
+    Base path note: the client documents routes as /api/... — served here
+    via `servers: [/api]`, so e.g. `GET /api/settings`.
+  version: 1.0.0
+
+servers:
+  - url: /api
+
+# No endpoint requires authentication. Stated explicitly so codegen does
+# not add auth, and so a future auth addition is a deliberate diff.
+security: []
+
+tags:
+  - name: settings
+  - name: reviews
+
+paths:
+  /settings:
+    get:
+      tags: [settings]
+      summary: Fetch business settings (row id=1)
+      operationId: getSettings
+      security: []
+      responses:
+        "200":
+          description: >
+            Current business settings, or null when no profile has been
+            saved yet (client type is `BusinessSettings | null`; settings
+            page renders an empty form on null).
+          content:
+            application/json:
+              schema:
+                nullable: true
+                $ref: "#/components/schemas/BusinessSettings"
+        "404":
+          description: >
+            Alternative to a 200+null body when settings are not yet
+            configured. The client treats both as "no profile".
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
+      tags: [settings]
+      summary: Create or replace business settings (upsert row id=1)
+      operationId: saveSettings
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BusinessSettings"
+      responses:
+        "200":
+          description: Settings saved (echo of stored profile)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BusinessSettings"
+        "422":
+          description: Validation error (field length bounds violated)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+
+  /reviews:
+    get:
+      tags: [reviews]
+      summary: List all reviews (newest first)
+      description: >
+        The client sends no query parameters and filters into
+        pending/completed tabs locally (`status === draft/approved` in
+        routes/index.tsx). A backend MAY accept an optional `status`
+        filter, but the frontend never sends one.
+      operationId: listReviews
+      security: []
+      responses:
+        "200":
+          description: Array of reviews, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Review"
+    post:
+      tags: [reviews]
+      summary: Create a single review via the manual form
+      operationId: createReview
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReviewCreate"
+      responses:
+        "201":
+          description: Review created as a `draft` with empty AI fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Review"
+        "409":
+          description: >
+            Duplicate review — same author_name + review_text (trimmed,
+            case-insensitive) already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation error (AC-03 bounds)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+
+  /reviews/import:
+    post:
+      tags: [reviews]
+      summary: Bulk import reviews from a CSV file
+      description: >
+        Single file field `file`. The file must have headers
+        author_name, review_text, rating; max 1 MB; max 100 data rows
+        (AC-04/AC-05). Valid rows are inserted as `draft` with empty AI
+        fields; invalid/duplicate rows are skipped and reported (AC-06).
+      operationId: importReviewsCsv
+      security: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: CSV with headers author_name, review_text, rating. Max 1 MB, max 100 rows.
+              required: [file]
+      responses:
+        "201":
+          description: Import completed (partial success possible)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportSummary"
+        "400":
+          description: >
+            Whole-file rejection: empty file, missing required columns,
+            file exceeds 1 MB, or row count exceeds 100
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /reviews/{id}/generate:
+    post:
+      tags: [reviews]
+      summary: Generate (or regenerate) an AI reply for one review
+      description: >
+        Single LLM call returns reply text + sentiment + tags (AC-09).
+        Regeneration with new instructions overwrites the stored draft in
+        place (AC-15). Reply text is always populated on success; sentiment
+        may be null and tags may be [] on partial model failure (AC-13).
+        The body is optional — omitting it generates from review +
+        business profile alone. UI sends `{instructions}` only when the
+        steering input is non-empty.
+      operationId: generateReply
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateReplyRequest"
+      responses:
+        "200":
+          description: Reply generated; review row updated and returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Review"
+        "400":
+          description: Business profile not configured yet — set up settings first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Review not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: LLM unreachable/timed out — frontend shows Retry (AC-14)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /reviews/{id}:
+    patch:
+      tags: [reviews]
+      summary: Update reply text and/or approve a review
+      description: >
+        Manual textarea edits live only in local UI state (AC-16); Approve
+        sends one PATCH with `{reply_text, status: approved}` which moves
+        the card to the Completed tab (AC-17). Both fields are optional.
+      operationId: updateReview
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateReviewRequest"
+      responses:
+        "200":
+          description: Review updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Review"
+        "404":
+          description: Review not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Validation error (e.g. reply_text over 500 chars)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationError"
+    delete:
+      tags: [reviews]
+      summary: Delete a review
+      description: >
+        Used by the trash button on cards without a reply yet
+        (ReviewCard). No request body.
+      operationId: deleteReview
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Review deleted
+        "404":
+          description: Review not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  schemas:
+    ReviewStatus:
+      type: string
+      enum: [draft, approved]
+      description: Two-state lifecycle draft -> approved (AC-17).
+
+    Sentiment:
+      type: string
+      enum: [positive, neutral, negative]
+      description: LLM-classified sentiment (AC-11). Null on the Review when not yet generated or degraded.
+
+    ReviewSource:
+      type: string
+      enum: [manual, csv, google, yelp, tripadvisor]
+      description: Origin of the review. Client sends manual (form) or csv (import); seeds use google/yelp/tripadvisor.
+
+    BusinessSettings:
+      type: object
+      required: [business_name, business_type, description, brand_voice]
+      description: PUT /api/settings payload and GET response (AC-01/AC-02).
+      properties:
+        business_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: Daily Grind Cafe
+        business_type:
+          type: string
+          minLength: 1
+          maxLength: 50
+          example: Coffee Shop
+        description:
+          type: string
+          minLength: 3
+          maxLength: 1000
+          example: Cozy local cafe serving organic brews and homemade pastries.
+        brand_voice:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: warm, welcoming, and slightly playful
+
+    ReviewCreate:
+      type: object
+      required: [author_name, review_text, rating]
+      description: POST /api/reviews payload (AC-03).
+      properties:
+        author_name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: John Doe
+        review_text:
+          type: string
+          minLength: 3
+          maxLength: 5000
+          example: Great espresso but service was a bit slow today.
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+          example: 4
+        source:
+          $ref: "#/components/schemas/ReviewSource"
+          default: manual
+          description: Defaults to manual when omitted (client form always sends manual).
+
+    Review:
+      type: object
+      required:
+        [id, author_name, rating, review_text, source, reply_text,
+          detected_sentiment, detected_tags, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        author_name:
+          type: string
+          example: John Doe
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+          example: 4
+        review_text:
+          type: string
+          example: Great espresso but service was a bit slow today.
+        source:
+          $ref: "#/components/schemas/ReviewSource"
+        reply_text:
+          type: string
+          nullable: true
+          maxLength: 500
+          description: Null until generated; 1-3 sentences, under 500 chars (AC-10).
+        detected_sentiment:
+          allOf:
+            - $ref: "#/components/schemas/Sentiment"
+          nullable: true
+        detected_tags:
+          type: array
+          items:
+            type: string
+          maxItems: 3
+          description: 1-3 short lowercase keywords (AC-12); [] until generated or on degradation.
+          example: [service, pricing]
+        status:
+          $ref: "#/components/schemas/ReviewStatus"
+        created_at:
+          type: string
+          format: date-time
+
+    GenerateReplyRequest:
+      type: object
+      description: POST /api/reviews/{id}/generate payload. Entire body optional.
+      properties:
+        instructions:
+          type: string
+          maxLength: 500
+          description: Plain-text steering instructions (AC-15). Sent only when non-empty.
+          example: Apologize for the slow service and offer a free cookie next time.
+
+    UpdateReviewRequest:
+      type: object
+      description: PATCH /api/reviews/{id} payload (AC-16/AC-17). Both fields optional.
+      properties:
+        reply_text:
+          type: string
+          maxLength: 500
+          nullable: true
+          description: Owner-edited response text.
+        status:
+          $ref: "#/components/schemas/ReviewStatus"
+
+    ImportRowError:
+      type: object
+      required: [row, error]
+      properties:
+        row:
+          type: integer
+          description: 1-based CSV row number (header is row 1).
+          example: 12
+        error:
+          type: string
+          example: Rating must be between 1 and 5
+
+    ImportSummary:
+      type: object
+      required: [status, imported, skipped, errors]
+      description: POST /api/reviews/import 201 response (AC-06).
+      properties:
+        status:
+          type: string
+          enum: [success]
+          example: success
+        imported:
+          type: integer
+          example: 95
+        skipped:
+          type: integer
+          example: 5
+        errors:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImportRowError"
+
+    Error:
+      type: object
+      required: [message]
+      description: Backend error. Client raises ApiError(status, message) and branches UI on status (404/409/400/500).
+      properties:
+        message:
+          type: string
+          example: Review not found
+
+    ValidationError:
+      type: object
+      description: 422 response shape for schema violations.
+      properties:
+        message:
+          type: string
+          example: Validation failed
+        issues:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string

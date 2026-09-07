@@ -16,7 +16,7 @@ export function composeSystemPrompt(settings: BusinessSettings): string {
 
 export function composeUserPrompt(
   review: Pick<Review, "author_name" | "rating" | "review_text" | "reply_text">,
-  instructions?: string,
+  instructions?: string | undefined,
 ): string {
   const parts = [
     `Review by ${review.author_name} (${review.rating}/5): ${review.review_text}`,

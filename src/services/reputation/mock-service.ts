@@ -113,7 +113,7 @@ function clampReply(text: string): string {
 export function mockLlmCall(input: {
   settings: BusinessSettings;
   review: Pick<Review, "author_name" | "rating" | "review_text" | "reply_text">;
-  instructions?: string;
+  instructions?: string | undefined;
 }) {
   // Prompts are composed exactly as the real backend would, so the mock
   // exercises the same context-engineering code path.

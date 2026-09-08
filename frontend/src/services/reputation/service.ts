@@ -6,6 +6,7 @@ import type {
   ReviewCreate,
   UpdateReviewRequest,
 } from "./types";
+import { createHttpReputationService } from "./http-service";
 import { createMockReputationService } from "./mock-service";
 
 /**
@@ -33,7 +34,11 @@ export interface ReputationService {
 }
 
 /**
- * Active implementation. The mock keeps the whole product runnable with no
- * backend; point this at an HTTP client once the FastAPI server exists.
+ * Active implementation. Set VITE_USE_API=true to talk to the FastAPI
+ * backend (VITE_API_BASE_URL, e.g. http://localhost:8000); otherwise the
+ * mock keeps the whole product runnable with no backend.
  */
-export const reputationService: ReputationService = createMockReputationService();
+export const reputationService: ReputationService =
+  import.meta.env.VITE_USE_API === "true"
+    ? createHttpReputationService()
+    : createMockReputationService();

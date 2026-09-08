@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     # === Groq (cloud, OpenAI-compatible) ===
     groq_api_key: str | None = Field(None, validation_alias="GROQ_API_KEY")
     groq_base_url: str = Field("https://api.groq.com/openai/v1", validation_alias="GROQ_BASE_URL")
-    groq_model: str = Field("llama-3.1-8b-instant", validation_alias="GROQ_MODEL")
+    groq_model: str = Field("openai/gpt-oss-20b", validation_alias="GROQ_MODEL")
 
     # === Ollama (local) ===
     ollama_base_url: str = Field("http://localhost:11434", validation_alias="OLLAMA_BASE_URL")

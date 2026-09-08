@@ -34,8 +34,10 @@ CSV_MAX_ROWS = 100  # AC-04
 REQUIRED_HEADERS = ("author_name", "review_text", "rating")
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-GROQ_DEFAULT_MODEL = "llama-3.1-8b-instant"
-GROQ_PREMIUM_MODEL = "llama-3.3-70b-versatile"
+# Groq retired llama-3.1-8b-instant / llama-3.3-70b-versatile on 2026-08-16
+# for free/dev tiers; official replacements below (console.groq.com/docs/deprecations).
+GROQ_DEFAULT_MODEL = "openai/gpt-oss-20b"
+GROQ_PREMIUM_MODEL = "openai/gpt-oss-120b"
 GROQ_TIMEOUT = 20.0
 
 
@@ -251,10 +253,11 @@ def _coerce_completion(completion: object) -> LLMStructuredOutput:
 
 
 class GroqReplyGenerator:
-    """Real AI pipeline via Groq (OpenAI-compatible Structured Outputs).
+    """Real AI pipeline via Groq JSON mode (single atomic call, AC-09).
 
-    Single atomic call returns reply_text + sentiment + tags (AC-09).
-    Partial metadata failures degrade to None/[] (AC-13); transport,
+    Groq strict schemas reject Optional/enum anyOf, so we request
+    `json_object` mode and validate with LLMStructuredOutput locally:
+    partial metadata failures degrade to None/[] (AC-13); transport,
     timeout, and 429 rate-limit failures raise LLMUnavailableError (AC-14).
     """
 
@@ -292,13 +295,13 @@ class GroqReplyGenerator:
 
     def _request(self, client, system: str, user: str):  # type: ignore[no-untyped-def]
         try:
-            return client.beta.chat.completions.parse(
+            return client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
-                response_format=LLMStructuredOutput,
+                response_format={"type": "json_object"},
             )
         except Exception as exc:
             raise LLMUnavailableError(f"Groq request failed: {exc}") from exc

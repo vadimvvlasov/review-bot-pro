@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.models import BusinessSettings, LLMStructuredOutput, Review, ReviewSource
+from app.models import BusinessSettings, Review, ReviewSource
 from app.services import (
     GROQ_BASE_URL,
     GROQ_DEFAULT_MODEL,
@@ -38,17 +38,17 @@ def _review() -> Review:
     )
 
 
-def _completion(parsed=None, content=""):
-    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(parsed=parsed, content=content))])
+def _completion(content=""):
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
 
 
 def _client_with(completion=None, error=None):
     client = MagicMock()
-    parse = client.beta.chat.completions.parse
+    create = client.chat.completions.create
     if error is not None:
-        parse.side_effect = error
+        create.side_effect = error
     else:
-        parse.return_value = completion
+        create.return_value = completion
     return client
 
 
@@ -73,9 +73,11 @@ def test_get_reply_generator_prefers_groq_when_configured(monkeypatch):
 
 
 def test_atomic_structured_call_returns_all_fields():
-    parsed = LLMStructuredOutput(reply_text="Thank you Ann, we appreciate the detailed feedback here.", detected_sentiment="positive", detected_tags=["service"])
+    import json as _json
+
+    body = _json.dumps({"reply_text": "Thank you Ann, we appreciate the detailed feedback here.", "detected_sentiment": "positive", "detected_tags": ["service"]})
     gen = GroqReplyGenerator(api_key="k")
-    with patch("openai.OpenAI", return_value=_client_with(_completion(parsed))):
+    with patch("openai.OpenAI", return_value=_client_with(_completion(body))):
         out = gen.generate(_settings(), _review(), None)
     assert out.reply_text.startswith("Thank you")
     assert out.detected_sentiment and out.detected_sentiment.value == "positive"
@@ -83,22 +85,24 @@ def test_atomic_structured_call_returns_all_fields():
     assert 10 <= len(out.reply_text) <= 500
 
 
-def test_single_call_passes_pydantic_model_as_response_format():
-    parsed = LLMStructuredOutput(reply_text="Thank you Ann, we appreciate the detailed feedback here.", detected_sentiment="neutral", detected_tags=["coffee"])
-    client = _client_with(_completion(parsed))
-    gen = GroqReplyGenerator(api_key="k", model="llama-3.3-70b-versatile")
+def test_single_call_uses_json_object_mode():
+    import json as _json
+
+    body = _json.dumps({"reply_text": "Thank you Ann, we appreciate the detailed feedback here.", "detected_sentiment": "neutral", "detected_tags": ["coffee"]})
+    client = _client_with(_completion(body))
+    gen = GroqReplyGenerator(api_key="k", model="openai/gpt-oss-120b")
     with patch("openai.OpenAI", return_value=client) as factory:
         gen.generate(_settings(), _review(), "be brief")
     factory.assert_called_once_with(api_key="k", base_url=GROQ_BASE_URL, timeout=20.0)
-    _, kwargs = client.beta.chat.completions.parse.call_args
-    assert kwargs["response_format"] is LLMStructuredOutput
-    assert kwargs["model"] == "llama-3.3-70b-versatile"
+    _, kwargs = client.chat.completions.create.call_args
+    assert kwargs["response_format"] == {"type": "json_object"}
+    assert kwargs["model"] == "openai/gpt-oss-120b"
 
 
 def test_graceful_degradation_keeps_reply_on_bad_metadata():
     raw = {"reply_text": "Thank you Ann, valid reply text long enough here.", "detected_sentiment": "ecstatic", "detected_tags": "not-a-list"}
     gen = GroqReplyGenerator(api_key="k")
-    with patch("openai.OpenAI", return_value=_client_with(_completion(None, __import__("json").dumps(raw)))):
+    with patch("openai.OpenAI", return_value=_client_with(_completion(__import__("json").dumps(raw)))):
         out = gen.generate(_settings(), _review(), None)
     assert out.reply_text == raw["reply_text"]
     assert out.detected_sentiment is None

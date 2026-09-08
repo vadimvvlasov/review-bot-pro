@@ -31,6 +31,10 @@ def create_app(store: InMemoryStore | None = None) -> FastAPI:
     app.include_router(reviews_router.router, prefix="/api")
     app.include_router(auth_router.router, prefix="/api")
 
+    @app.get("/", tags=["health"])
+    def root() -> dict[str, str]:
+        return {"status": "ok", "docs": "/docs", "health": "/api/health"}
+
     @app.get("/api/health", tags=["health"])
     def health() -> dict[str, str]:
         return {"status": "ok"}

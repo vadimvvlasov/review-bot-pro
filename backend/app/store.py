@@ -21,7 +21,7 @@ from .models import (
     UpdateReviewRequest,
     UserRecord,
 )
-from .services import CsvImporter, ReplyGenerator
+from .services import CsvImporter, LLMUnavailableError, ReplyGenerator, ReplyGeneratorProtocol
 
 
 class NotFoundError(Exception):
@@ -130,7 +130,7 @@ class InMemoryStore:
     def __init__(
         self,
         seed: bool = True,
-        generator: ReplyGenerator | None = None,
+        generator: ReplyGeneratorProtocol | None = None,
         importer: CsvImporter | None = None,
     ) -> None:
         self.settings: BusinessSettings | None = None
@@ -215,10 +215,16 @@ class InMemoryStore:
         review = self.get_review(review_id)
         if self.settings is None:
             raise SettingsMissingError("Set up your business profile before generating replies")
-        reply_text, sentiment, tags = self._generator.generate(
-            self.settings, review, instructions
-        )
-        review.reply_text = reply_text
-        review.detected_sentiment = sentiment
-        review.detected_tags = tags
+        try:
+            output = self._generator.generate(self.settings, review, instructions)
+        except LLMUnavailableError:
+            raise
+        except Exception as exc:
+            # AC-14: transport/unknown failures must surface as 500.
+            # AC-13 degradation happens inside parse/degrade helpers,
+            # not by swallowing transport errors here.
+            raise LLMUnavailableError(f"Reply engine is unavailable: {exc}") from exc
+        review.reply_text = output.reply_text
+        review.detected_sentiment = output.detected_sentiment
+        review.detected_tags = list(output.detected_tags)
         return review

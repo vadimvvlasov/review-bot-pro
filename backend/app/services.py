@@ -10,17 +10,21 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 from collections.abc import Callable
+from typing import Protocol
 
 from .models import (
     BusinessSettings,
     ImportRowError,
     ImportSummary,
+    LLMStructuredOutput,
     Review,
     ReviewCreate,
     ReviewSource,
     Sentiment,
 )
+from .prompt import compose_system_prompt, compose_user_prompt
 
 CSV_MAX_BYTES = 1024 * 1024  # 1 MB (AC-04)
 CSV_MAX_ROWS = 100  # AC-04
@@ -46,16 +50,57 @@ class CsvFileError(Exception):
     """Whole-file rejection -> 400."""
 
 
-class ReplyGenerator:
-    """Deterministic stand-in for the single structured LLM call (AC-09..AC-13)."""
+class LLMUnavailableError(Exception):
+    """Total LLM failure (network/timeout/no key) -> 500 (AC-14)."""
+
+
+class ReplyGeneratorProtocol(Protocol):
+    """Abstraction for reply generation (DIP/OCP)."""
 
     def generate(
         self, settings: BusinessSettings, review: Review, instructions: str | None
-    ) -> tuple[str, Sentiment, list[str]]:
+    ) -> LLMStructuredOutput: ...
+
+
+def parse_llm_output(data: dict) -> LLMStructuredOutput:
+    """Strict parse with graceful degradation (AC-13).
+
+    Validators on LLMStructuredOutput coerce bad sentiment/tags to
+    None/[]. Only a missing/invalid reply_text raises.
+    """
+    return LLMStructuredOutput.model_validate(data)
+
+
+def degrade_llm_output(raw: object, fallback_reply: str) -> LLMStructuredOutput:
+    """Best-effort fallback: keep reply text, drop bad metadata."""
+    reply = fallback_reply.strip()
+    if isinstance(raw, dict) and isinstance(raw.get("reply_text"), str):
+        candidate = raw["reply_text"].strip()
+        if 10 <= len(candidate) <= 500:
+            reply = candidate
+    if len(reply) > 500:
+        reply = f"{reply[:497].rstrip()}..."
+    return LLMStructuredOutput(reply_text=reply, detected_sentiment=None, detected_tags=[])
+
+
+class ReplyGenerator:
+    """Deterministic offline stand-in (default in tests/CI, no network)."""
+
+    def generate(
+        self, settings: BusinessSettings, review: Review, instructions: str | None
+    ) -> LLMStructuredOutput:
+        compose_system_prompt(settings)
+        compose_user_prompt(review, instructions)
         sentiment = self._classify(review.review_text, review.rating)
         first_name = (review.author_name.split(" ")[0] or "there").strip() or "there"
         reply = f"{self._opening(sentiment, first_name)} {self._middle(sentiment, settings)} {self._closing(instructions)}"
-        return self._clamp(reply), sentiment, self._extract_tags(review.review_text)
+        return parse_llm_output(
+            {
+                "reply_text": self._clamp(reply),
+                "detected_sentiment": sentiment.value,
+                "detected_tags": self._extract_tags(review.review_text),
+            }
+        )
 
     @staticmethod
     def _classify(review_text: str, rating: int) -> Sentiment:
@@ -102,6 +147,52 @@ class ReplyGenerator:
     def _clamp(text: str) -> str:
         text = text.strip()
         return text if len(text) <= 500 else f"{text[:497].rstrip()}..."
+
+
+class OpenAIReplyGenerator:
+    """Real LLM client via OpenAI Structured Outputs (AC-09).
+
+    Lazy-imports the SDK so unit tests without a key/network still pass.
+    Raises LLMUnavailableError on any transport failure (AC-14).
+    """
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str = "gpt-4o-mini",
+        timeout: float = 20.0,
+    ) -> None:
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.model = os.getenv("OPENAI_MODEL", model)
+        self.timeout = timeout
+
+    def generate(
+        self, settings: BusinessSettings, review: Review, instructions: str | None
+    ) -> LLMStructuredOutput:
+        if not self.api_key:
+            raise LLMUnavailableError("OPENAI_API_KEY is not set")
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise LLMUnavailableError("openai package is not installed") from exc
+        client = OpenAI(api_key=self.api_key, timeout=self.timeout)
+        system = compose_system_prompt(settings)
+        user = compose_user_prompt(review, instructions)
+        try:
+            completion = client.beta.chat.completions.parse(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                response_format=LLMStructuredOutput,
+            )
+        except Exception as exc:
+            raise LLMUnavailableError(f"LLM request failed: {exc}") from exc
+        parsed = completion.choices[0].message.parsed
+        if parsed is None:
+            raise LLMUnavailableError("LLM returned no structured output")
+        return parsed
 
 
 class CsvImporter:

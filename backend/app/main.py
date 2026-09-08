@@ -1,5 +1,7 @@
 """App factory. Run with: uv run uvicorn app.main:app --reload (from backend/)."""
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -7,7 +9,16 @@ from .errors import ApiError, api_error_handler
 from .routers import auth as auth_router
 from .routers import reviews as reviews_router
 from .routers import settings as settings_router
+from .services import OpenAIReplyGenerator, ReplyGenerator
 from .store import InMemoryStore
+
+
+def _default_generator() -> OpenAIReplyGenerator | ReplyGenerator:
+    # Real LLM only when explicitly configured; otherwise deterministic mock
+    # keeps tests offline and free (spec §7: no network in CI).
+    if os.getenv("OPENAI_API_KEY"):
+        return OpenAIReplyGenerator()
+    return ReplyGenerator()
 
 
 def create_app(store: InMemoryStore | None = None) -> FastAPI:
@@ -19,7 +30,7 @@ def create_app(store: InMemoryStore | None = None) -> FastAPI:
             "Implements openapi.yaml; no spec endpoint requires auth."
         ),
     )
-    app.state.store = store if store is not None else InMemoryStore(seed=True)
+    app.state.store = store if store is not None else InMemoryStore(seed=True, generator=_default_generator())
     app.add_exception_handler(ApiError, api_error_handler)
     app.add_middleware(
         CORSMiddleware,

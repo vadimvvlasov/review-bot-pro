@@ -73,6 +73,40 @@ class GenerateReplyRequest(BaseModel):
     instructions: Optional[str] = Field(default=None, max_length=500)
 
 
+class LLMStructuredOutput(BaseModel):
+    """Single-call structured LLM contract (AC-09..AC-13, spec §6)."""
+
+    reply_text: str = Field(min_length=10, max_length=500)
+    detected_sentiment: Optional[Sentiment] = None
+    detected_tags: list[str] = Field(default_factory=list, max_length=3)
+
+    @field_validator("detected_tags", mode="before")
+    @classmethod
+    def _coerce_tags(cls, v: object) -> object:
+        # Graceful degradation: invalid tag payloads fall back to [].
+        if v is None:
+            return []
+        if not isinstance(v, list):
+            return []
+        cleaned = [t.strip().lower() for t in v if isinstance(t, str) and t.strip()]
+        return cleaned[:3]
+
+    @field_validator("detected_sentiment", mode="before")
+    @classmethod
+    def _coerce_sentiment(cls, v: object) -> object:
+        # Graceful degradation: unknown sentiment falls back to None.
+        if v is None:
+            return None
+        if isinstance(v, Sentiment):
+            return v
+        if isinstance(v, str):
+            try:
+                return Sentiment(v.strip().lower())
+            except ValueError:
+                return None
+        return None
+
+
 class UpdateReviewRequest(BaseModel):
     """PATCH /api/reviews/{id} payload (AC-16/AC-17). Both fields optional."""
 

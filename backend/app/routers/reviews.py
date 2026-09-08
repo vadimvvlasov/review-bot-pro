@@ -13,7 +13,7 @@ from ..models import (
     UpdateReviewRequest,
 )
 from ..protocols import ReviewStore
-from ..services import CsvFileError
+from ..services import CsvFileError, LLMUnavailableError
 from ..store import DuplicateError, NotFoundError, SettingsMissingError
 
 router = APIRouter(tags=["reviews"])
@@ -66,6 +66,8 @@ def generate_reply(
         raise ApiError(404, str(exc)) from exc
     except SettingsMissingError as exc:
         raise ApiError(400, str(exc)) from exc
+    except LLMUnavailableError as exc:
+        raise ApiError(500, str(exc) or "Reply engine is unavailable") from exc
 
 
 @router.patch("/reviews/{review_id}", response_model=Review)

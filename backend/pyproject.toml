@@ -9,6 +9,8 @@ dependencies = [
   "python-multipart>=0.0.18",
   "bcrypt>=4.1",
   "pyjwt>=2.8",
+  "openai>=3.8.0",
+  "pydantic-settings>=2.15.0",
 ]
 
 [dependency-groups]

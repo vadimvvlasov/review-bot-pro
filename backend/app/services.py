@@ -10,21 +10,45 @@ from __future__ import annotations
 
 import csv
 import io
+import json
+import os
 from collections.abc import Callable
+from typing import Protocol
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .models import (
     BusinessSettings,
     ImportRowError,
     ImportSummary,
+    LLMStructuredOutput,
     Review,
     ReviewCreate,
     ReviewSource,
     Sentiment,
 )
+from .prompt import compose_system_prompt, compose_user_prompt
 
 CSV_MAX_BYTES = 1024 * 1024  # 1 MB (AC-04)
 CSV_MAX_ROWS = 100  # AC-04
 REQUIRED_HEADERS = ("author_name", "review_text", "rating")
+
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+# Groq retired llama-3.1-8b-instant / llama-3.3-70b-versatile on 2026-08-16
+# for free/dev tiers; official replacements below (console.groq.com/docs/deprecations).
+GROQ_DEFAULT_MODEL = "openai/gpt-oss-20b"
+GROQ_PREMIUM_MODEL = "openai/gpt-oss-120b"
+GROQ_TIMEOUT = 20.0
+
+
+class GroqSettings(BaseSettings):
+    """Secrets/config for Groq (OpenAI-compatible). Never hardcode keys."""
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    groq_api_key: str | None = None
+    groq_model: str = GROQ_DEFAULT_MODEL
+    groq_timeout: float = GROQ_TIMEOUT
 
 _POSITIVE_WORDS = (
     "great", "best", "love", "lovely", "amazing", "friendly", "fresh", "unreal", "perfect",
@@ -46,16 +70,57 @@ class CsvFileError(Exception):
     """Whole-file rejection -> 400."""
 
 
-class ReplyGenerator:
-    """Deterministic stand-in for the single structured LLM call (AC-09..AC-13)."""
+class LLMUnavailableError(Exception):
+    """Total LLM failure (network/timeout/no key) -> 500 (AC-14)."""
+
+
+class ReplyGeneratorProtocol(Protocol):
+    """Abstraction for reply generation (DIP/OCP)."""
 
     def generate(
         self, settings: BusinessSettings, review: Review, instructions: str | None
-    ) -> tuple[str, Sentiment, list[str]]:
+    ) -> LLMStructuredOutput: ...
+
+
+def parse_llm_output(data: dict) -> LLMStructuredOutput:
+    """Strict parse with graceful degradation (AC-13).
+
+    Validators on LLMStructuredOutput coerce bad sentiment/tags to
+    None/[]. Only a missing/invalid reply_text raises.
+    """
+    return LLMStructuredOutput.model_validate(data)
+
+
+def degrade_llm_output(raw: object, fallback_reply: str) -> LLMStructuredOutput:
+    """Best-effort fallback: keep reply text, drop bad metadata."""
+    reply = fallback_reply.strip()
+    if isinstance(raw, dict) and isinstance(raw.get("reply_text"), str):
+        candidate = raw["reply_text"].strip()
+        if 10 <= len(candidate) <= 500:
+            reply = candidate
+    if len(reply) > 500:
+        reply = f"{reply[:497].rstrip()}..."
+    return LLMStructuredOutput(reply_text=reply, detected_sentiment=None, detected_tags=[])
+
+
+class ReplyGenerator:
+    """Deterministic offline stand-in (default in tests/CI, no network)."""
+
+    def generate(
+        self, settings: BusinessSettings, review: Review, instructions: str | None
+    ) -> LLMStructuredOutput:
+        compose_system_prompt(settings)
+        compose_user_prompt(review, instructions)
         sentiment = self._classify(review.review_text, review.rating)
         first_name = (review.author_name.split(" ")[0] or "there").strip() or "there"
         reply = f"{self._opening(sentiment, first_name)} {self._middle(sentiment, settings)} {self._closing(instructions)}"
-        return self._clamp(reply), sentiment, self._extract_tags(review.review_text)
+        return parse_llm_output(
+            {
+                "reply_text": self._clamp(reply),
+                "detected_sentiment": sentiment.value,
+                "detected_tags": self._extract_tags(review.review_text),
+            }
+        )
 
     @staticmethod
     def _classify(review_text: str, rating: int) -> Sentiment:
@@ -102,6 +167,162 @@ class ReplyGenerator:
     def _clamp(text: str) -> str:
         text = text.strip()
         return text if len(text) <= 500 else f"{text[:497].rstrip()}..."
+
+
+class OpenAIReplyGenerator:
+    """Real LLM client via OpenAI Structured Outputs (AC-09).
+
+    Lazy-imports the SDK so unit tests without a key/network still pass.
+    Raises LLMUnavailableError on any transport failure (AC-14).
+    """
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str = "gpt-4o-mini",
+        timeout: float = 20.0,
+    ) -> None:
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.model = os.getenv("OPENAI_MODEL", model)
+        self.timeout = timeout
+
+    def generate(
+        self, settings: BusinessSettings, review: Review, instructions: str | None
+    ) -> LLMStructuredOutput:
+        if not self.api_key:
+            raise LLMUnavailableError("OPENAI_API_KEY is not set")
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise LLMUnavailableError("openai package is not installed") from exc
+        client = OpenAI(api_key=self.api_key, timeout=self.timeout)
+        system = compose_system_prompt(settings)
+        user = compose_user_prompt(review, instructions)
+        try:
+            completion = client.beta.chat.completions.parse(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                response_format=LLMStructuredOutput,
+            )
+        except Exception as exc:
+            raise LLMUnavailableError(f"LLM request failed: {exc}") from exc
+        parsed = completion.choices[0].message.parsed
+        if parsed is None:
+            raise LLMUnavailableError("LLM returned no structured output")
+        return parsed
+
+
+def _fallback_text(raw_text: str) -> str:
+    """Extract best-effort reply text from raw model content (AC-13)."""
+    text = (raw_text or "").strip()
+    if not text:
+        raise LLMUnavailableError("LLM returned empty output")
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        data = None
+    if isinstance(data, dict) and isinstance(data.get("reply_text"), str):
+        candidate = data["reply_text"].strip()
+        if 10 <= len(candidate) <= 500:
+            return candidate
+    if 10 <= len(text) <= 500:
+        return text
+    raise LLMUnavailableError("LLM reply text failed validation")
+
+
+def _coerce_completion(completion: object) -> LLMStructuredOutput:
+    """Return parsed output or degrade metadata, keeping reply text."""
+    message = completion.choices[0].message  # type: ignore[attr-defined]
+    parsed = getattr(message, "parsed", None)
+    if isinstance(parsed, LLMStructuredOutput):
+        return parsed
+    content = getattr(message, "content", None) or ""
+    try:
+        data = json.loads(content) if content.strip().startswith("{") else None
+    except (json.JSONDecodeError, ValueError):
+        data = None
+    if isinstance(data, dict):
+        try:
+            return parse_llm_output(data)
+        except Exception:
+            pass
+    return degrade_llm_output(data, _fallback_text(content))
+
+
+class GroqReplyGenerator:
+    """Real AI pipeline via Groq JSON mode (single atomic call, AC-09).
+
+    Groq strict schemas reject Optional/enum anyOf, so we request
+    `json_object` mode and validate with LLMStructuredOutput locally:
+    partial metadata failures degrade to None/[] (AC-13); transport,
+    timeout, and 429 rate-limit failures raise LLMUnavailableError (AC-14).
+    """
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model: str | None = None,
+        timeout: float | None = None,
+        base_url: str = GROQ_BASE_URL,
+        settings: GroqSettings | None = None,
+    ) -> None:
+        cfg = settings or GroqSettings()
+        self.api_key = api_key or cfg.groq_api_key or os.getenv("GROQ_API_KEY")
+        self.model = model or cfg.groq_model or GROQ_DEFAULT_MODEL
+        self.timeout = timeout if timeout is not None else cfg.groq_timeout
+        self.base_url = base_url
+
+    def generate(
+        self, settings: BusinessSettings, review: Review, instructions: str | None
+    ) -> LLMStructuredOutput:
+        client = self._build_client()
+        system = compose_system_prompt(settings)
+        user = compose_user_prompt(review, instructions)
+        completion = self._request(client, system, user)
+        return _coerce_completion(completion)
+
+    def _build_client(self):  # type: ignore[no-untyped-def]
+        if not self.api_key:
+            raise LLMUnavailableError("GROQ_API_KEY is not set")
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise LLMUnavailableError("openai package is not installed") from exc
+        return OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=self.timeout)
+
+    def _request(self, client, system: str, user: str):  # type: ignore[no-untyped-def]
+        try:
+            return client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                response_format={"type": "json_object"},
+            )
+        except Exception as exc:
+            raise LLMUnavailableError(f"Groq request failed: {exc}") from exc
+
+
+def get_reply_generator() -> ReplyGeneratorProtocol:
+    """DI factory: real Groq pipeline when configured, else offline mock.
+
+    Selection order: central `Settings.llm_provider == "groq"` wins;
+    legacy `GROQ_API_KEY` env presence also opts into Groq (backward
+    compatible). Fresh `Settings()` read keeps tests hermetic.
+    """
+    try:
+        from .config import Settings
+
+        provider = Settings().llm_provider
+    except Exception:
+        provider = "mock"
+    if provider == "groq" or os.getenv("GROQ_API_KEY"):
+        return GroqReplyGenerator()
+    return ReplyGenerator()
 
 
 class CsvImporter:

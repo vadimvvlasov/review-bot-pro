@@ -305,8 +305,19 @@ class GroqReplyGenerator:
 
 
 def get_reply_generator() -> ReplyGeneratorProtocol:
-    """DI factory: real Groq pipeline when configured, else offline mock."""
-    if os.getenv("GROQ_API_KEY"):
+    """DI factory: real Groq pipeline when configured, else offline mock.
+
+    Selection order: central `Settings.llm_provider == "groq"` wins;
+    legacy `GROQ_API_KEY` env presence also opts into Groq (backward
+    compatible). Fresh `Settings()` read keeps tests hermetic.
+    """
+    try:
+        from .config import Settings
+
+        provider = Settings().llm_provider
+    except Exception:
+        provider = "mock"
+    if provider == "groq" or os.getenv("GROQ_API_KEY"):
         return GroqReplyGenerator()
     return ReplyGenerator()
 

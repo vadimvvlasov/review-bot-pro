@@ -44,7 +44,7 @@ GROQ_TIMEOUT = 20.0
 class GroqSettings(BaseSettings):
     """Secrets/config for Groq (OpenAI-compatible). Never hardcode keys."""
 
-    model_config = SettingsConfigDict(env_prefix="", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     groq_api_key: str | None = None
     groq_model: str = GROQ_DEFAULT_MODEL

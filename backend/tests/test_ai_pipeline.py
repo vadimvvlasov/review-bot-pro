@@ -109,7 +109,10 @@ def test_graceful_degradation_keeps_reply_on_bad_metadata():
     assert out.detected_tags == []
 
 
-def test_missing_key_raises_unavailable():
+def test_missing_key_raises_unavailable(monkeypatch, tmp_path):
+    # Isolate from backend/.env so no key is discoverable.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
     with pytest.raises(LLMUnavailableError):
         GroqReplyGenerator(api_key=None).generate(_settings(), _review(), None)
 

@@ -9,16 +9,21 @@ from .errors import ApiError, api_error_handler
 from .routers import auth as auth_router
 from .routers import reviews as reviews_router
 from .routers import settings as settings_router
-from .services import OpenAIReplyGenerator, ReplyGenerator
+from .services import ReplyGeneratorProtocol, get_reply_generator
 from .store import InMemoryStore
 
 
-def _default_generator() -> OpenAIReplyGenerator | ReplyGenerator:
-    # Real LLM only when explicitly configured; otherwise deterministic mock
-    # keeps tests offline and free (spec §7: no network in CI).
+def _default_generator() -> ReplyGeneratorProtocol:
+    # Real Groq pipeline only when GROQ_API_KEY is set; otherwise the
+    # deterministic mock keeps tests offline and free (spec §7: no CI network).
+    # Legacy OPENAI_API_KEY still opts into the OpenAI client explicitly.
+    if os.getenv("GROQ_API_KEY"):
+        return get_reply_generator()
     if os.getenv("OPENAI_API_KEY"):
+        from .services import OpenAIReplyGenerator
+
         return OpenAIReplyGenerator()
-    return ReplyGenerator()
+    return get_reply_generator()
 
 
 def create_app(store: InMemoryStore | None = None) -> FastAPI:

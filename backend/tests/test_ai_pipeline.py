@@ -1,7 +1,7 @@
 """Groq AI pipeline tests with mocked transport (AC-09..AC-14).
 
 No network calls: the OpenAI-compatible client is faked. Store/DB layers
-are untouched; generation is injected via the in-memory store's generator.
+are untouched; generation is injected via the store's generator.
 """
 
 from types import SimpleNamespace

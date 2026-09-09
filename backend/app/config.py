@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     app_name: str = "Review-Reply Bot"
     environment: Literal["development", "production", "test"] = "development"
 
-    # === Database (Milestone 4; Milestone 3 keeps the in-memory store) ===
+    # === Database (Milestone 4: SQLAlchemy store, URL-configured) ===
     database_url: str = Field("sqlite:///./reviews.db", validation_alias="DATABASE_URL")
 
     # === LLM pipeline ===

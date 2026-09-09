@@ -1,5 +1,5 @@
 """Narrow store interfaces (ISP). Routers and services depend on these
-abstractions, never on the concrete InMemoryStore (DIP). The composition
+abstractions, never on the concrete DbStore (DIP). The composition
 root (main.create_app via deps.get_store) wires the concrete class."""
 
 from typing import Protocol

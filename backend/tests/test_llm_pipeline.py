@@ -8,7 +8,7 @@ from app.services import (
     degrade_llm_output,
     parse_llm_output,
 )
-from app.store import InMemoryStore
+from app.store import DbStore
 
 
 def _settings() -> BusinessSettings:
@@ -75,7 +75,7 @@ def test_degrade_keeps_valid_reply_text():
 
 
 def test_llm_down_without_key_returns_500(client):
-    store: InMemoryStore = client.app.state.store
+    store: DbStore = client.app.state.store
     store._generator = OpenAIReplyGenerator(api_key=None)
     review_id = client.get("/api/reviews").json()[0]["id"]
     res = client.post(f"/api/reviews/{review_id}/generate")
@@ -90,7 +90,7 @@ def test_llm_transport_failure_returns_500(client, monkeypatch):
         raise LLMUnavailableError("API connection failed")
 
     monkeypatch.setattr(svc.OpenAIReplyGenerator, "generate", boom)
-    store: InMemoryStore = client.app.state.store
+    store: DbStore = client.app.state.store
     store._generator = OpenAIReplyGenerator(api_key="fake")
     review_id = client.get("/api/reviews").json()[0]["id"]
     res = client.post(f"/api/reviews/{review_id}/generate")

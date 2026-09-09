@@ -2,8 +2,8 @@
 
 from fastapi import Request
 
-from .store import InMemoryStore
+from .store import DbStore
 
 
-def get_store(request: Request) -> InMemoryStore:
+def get_store(request: Request) -> DbStore:
     return request.app.state.store

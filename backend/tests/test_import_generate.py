@@ -1,6 +1,20 @@
 """CSV import (AC-04..AC-06) and on-demand generation (AC-09..AC-15)."""
 
+from pathlib import Path
+
 HEADER = "author_name,review_text,rating"
+
+FIXTURE_CSV = Path(__file__).parent / "data" / "test_reviews.csv"
+
+
+def test_import_fixture_csv_all_rows_valid(client):
+    res = client.post(
+        "/api/reviews/import",
+        files={"file": ("test_reviews.csv", FIXTURE_CSV.read_bytes(), "text/csv")},
+    )
+    assert res.status_code == 201, res.text
+    assert res.json() == {"status": "success", "imported": 20, "skipped": 0, "errors": []}
+    assert len(client.get("/api/reviews").json()) == 4 + 20
 
 
 def _csv(rows: list[str]) -> str:
